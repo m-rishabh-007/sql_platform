@@ -12,6 +12,7 @@ for all file conventions, patterns, and common pitfalls.
 ---
 
 ## Critical context (read before every task)
+- **Judge0 is at /home/rishabh/Documents/platform/judge0-submission-system **
 
 - **Judge0 runs at `http://localhost:3000`** (Python language_id: 71)
 - **Injection placeholder** in every `wrapper.py` is the exact string `USER_SQL = ""`
@@ -182,7 +183,7 @@ For problems with JOIN across two tables (e.g., Employee + Department):
 - `generator.py`: `return json.dumps({"Table1": rows1, "Table2": rows2})`
 - `examples.json`: `"stdin"` is the serialized dict string
 
-Full pattern in [PLATFORM_CONTEXT.md](../PLATFORM_CONTEXT.md#multi-table-problem-pattern).
+Full pattern in [PLATFORM_CONTEXT.md](../PLATFORM_CONTEXT.md) (see "Multi-table problem pattern" section).
 
 ---
 
