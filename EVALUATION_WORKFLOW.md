@@ -206,6 +206,71 @@ or fail. Only the set of rows matters.
 
 ---
 
+## Plain-English Explanation of the Two Core Steps
+
+### Step A — POST to Judge0 (execution)
+
+Judge0 is a code execution API. You send it Python source code and an input (stdin),
+and it runs the code in an isolated sandbox. The sandbox has no internet access by
+default — but because `enable_network: true` is set, it can reach `mysql-eval-server`
+on Docker's internal network.
+
+The Python code you send is not just any script — it is `wrapper.py` with the
+contestant's SQL injected. That wrapper:
+
+```
+Your backend
+    │
+    │  POST { source_code: wrapper+SQL, stdin: test_rows, enable_network: true }
+    ▼
+Judge0 API  (localhost:3000)
+    │
+    │  spins up isolated Python sandbox
+    ▼
+wrapper.py runs inside sandbox
+    │
+    │  pymysql connects over Docker network
+    ▼
+mysql-eval-server
+    ├── CREATE DATABASE sandbox_abc123   ← throwaway, isolated
+    ├── INSERT rows from stdin           ← the test case data
+    ├── run USER_SQL                     ← contestant's actual query
+    └── return result rows
+    │
+    ▼
+wrapper prints rows to stdout
+    │
+    ▼
+Judge0 returns { stdout: "John\n", status: { id: 3, description: "Accepted" } }
+```
+
+The UUID in `sandbox_abc123` ensures zero collision between concurrent submissions.
+The sandbox database is always dropped at the end, even if the query crashes.
+
+### Step B — stdout == expected_output (grading)
+
+`expected_output` was pre-computed during problem setup by running the *reference*
+solution against the same stdin. It is stored in the testcases JSON file.
+
+Your backend does a single string comparison:
+
+```
+Judge0 returned stdout  →  "John"
+expected_output         →  "John"
+Match?  YES  →  ACCEPTED
+
+Judge0 returned stdout  →  "Amy\nAnne\nDan\nJames\nJohn\nRon"
+expected_output         →  "John"
+Match?  NO   →  WRONG ANSWER
+```
+
+That is the entire grading logic — an exact string compare. No ML, no fuzzy
+matching. This works reliably because the wrapper always sorts rows before printing,
+so two correct queries that produce rows in different orders still produce identical
+stdout.
+
+---
+
 ## Data Flow Diagram (Contest Submission)
 
 ```
