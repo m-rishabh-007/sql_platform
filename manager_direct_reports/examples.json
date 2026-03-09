@@ -1,0 +1,17 @@
+[
+  {
+    "stdin": "[{\"id\": 101, \"name\": \"John\", \"department\": \"A\", \"managerId\": null}, {\"id\": 102, \"name\": \"Dan\", \"department\": \"A\", \"managerId\": 101}, {\"id\": 103, \"name\": \"James\", \"department\": \"A\", \"managerId\": 101}, {\"id\": 104, \"name\": \"Amy\", \"department\": \"A\", \"managerId\": 101}, {\"id\": 105, \"name\": \"Anne\", \"department\": \"A\", \"managerId\": 101}, {\"id\": 106, \"name\": \"Ron\", \"department\": \"B\", \"managerId\": 101}]",
+    "expected_output": "John",
+    "visibility": "visible"
+  },
+  {
+    "stdin": "[{\"id\": 1, \"name\": \"CEO\", \"department\": \"Exec\", \"managerId\": null}, {\"id\": 2, \"name\": \"Alice\", \"department\": \"Eng\", \"managerId\": 1}, {\"id\": 3, \"name\": \"Bob\", \"department\": \"Eng\", \"managerId\": 1}, {\"id\": 4, \"name\": \"Carol\", \"department\": \"Sales\", \"managerId\": 1}, {\"id\": 5, \"name\": \"Dan\", \"department\": \"HR\", \"managerId\": 1}, {\"id\": 6, \"name\": \"Eve\", \"department\": \"Finance\", \"managerId\": 1}, {\"id\": 7, \"name\": \"Frank\", \"department\": \"Legal\", \"managerId\": 2}, {\"id\": 8, \"name\": \"Grace\", \"department\": \"Legal\", \"managerId\": 2}]",
+    "expected_output": "CEO",
+    "visibility": "visible"
+  },
+  {
+    "stdin": "[{\"id\": 1, \"name\": \"Boss\", \"department\": \"A\", \"managerId\": null}, {\"id\": 2, \"name\": \"Alpha\", \"department\": \"A\", \"managerId\": 1}, {\"id\": 3, \"name\": \"Beta\", \"department\": \"A\", \"managerId\": 1}, {\"id\": 4, \"name\": \"Gamma\", \"department\": \"A\", \"managerId\": 1}, {\"id\": 5, \"name\": \"Delta\", \"department\": \"A\", \"managerId\": 1}]",
+    "expected_output": "",
+    "visibility": "visible"
+  }
+]
