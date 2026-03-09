@@ -18,11 +18,15 @@ wrapper_code.replace('USER_SQL = ""', f'USER_SQL = """\n{contestant_sql}\n"""')
 The replaced file is then submitted to Judge0 as Python (language_id: 71).
 
 **Critical rules for wrapper.py:**
-- Must import `sys`, `json`, `sqlite3` and nothing else (no external packages in Judge0)
-- `_SCHEMA_DDL` = the `CREATE TABLE` statement(s) for this problem
-- `_INSERT_SQL`  = the parameterized `INSERT INTO ... VALUES (:col, ...)` statement
-- `_create_db(rows)` = builds the in-memory SQLite DB from the JSON rows
-- `_run_query(conn, sql)` = executes USER_SQL and returns (rows, columns)
+- Must import `sys`, `json`, `uuid`, `pymysql` only. `pymysql` is baked into the
+  `judge0/judge0:1.13.1-mysql` squashed image — do NOT add any other third-party packages.
+- Must be **ASCII-only** — no em dashes, emoji, arrows, or any non-ASCII bytes.
+  Judge0 rejects non-ASCII source code when `base64_encoded=false`, causing the
+  submission to fall out of the `wait=true` synchronous path where Docker DNS works.
+- `_SCHEMA_DDL` = the `CREATE TABLE` statement(s) for this problem (MySQL types: INT, VARCHAR)
+- `_INSERT_SQL`  = the parameterized `INSERT INTO ... VALUES (%s, %s, ...)` statement
+- `execute_solution()` = connects to `mysql-eval-server`, creates `sandbox_<uuid>`, seeds,
+  runs USER_SQL, formats output, then DROPs the sandbox in a `finally` block
 - `_format_output(rows)` = sorts + prints rows, pipe-separated
 
 ### solution.py — orchestrator target
@@ -35,11 +39,11 @@ This is the file the orchestrator submits to Judge0 to get `expected_output`.
 **Keeping wrapper.py and solution.py in sync:**
 Any change to the schema DDL, insert SQL, or output formatting must be applied to
 BOTH files. The only difference between them is that `solution.py` has a non-empty
-`USER_SQL`.
+`USER_SQL`. Both must remain ASCII-only (see wrapper.py rules above).
 
 ### solution.sql — reference SQL
 
-Pure SQL — no Python, no comments that conflict with SQLite. Stored separately so:
+Pure SQL -- no Python. Stored separately so:
 - It can be displayed in an admin UI as the canonical answer
 - `orchestrator_sql.py` injects it into `wrapper.py` during test suite generation
 - It can be submitted directly to a real MySQL instance for verification
@@ -124,7 +128,7 @@ Multi-table — dict of table name → list of row dicts:
 }
 ```
 When using multi-table format, `wrapper.py` must parse the dict and insert each
-table separately. Update `_create_db` accordingly.
+table separately. Update the schema DDL and insert logic accordingly.
 
 ### stdout (graded output)
 ```
@@ -145,27 +149,24 @@ Rules:
 When a problem has more than one table (e.g., Employee + Department):
 
 ```python
-# wrapper.py — multi-table _create_db
-_SCHEMA_DDL = """
-CREATE TABLE Employee (id INTEGER, name TEXT, deptId INTEGER);
-CREATE TABLE Department (id INTEGER, name TEXT);
+# wrapper.py -- multi-table seed section (MySQL / pymysql)
+_SCHEMA_DDL_EMPLOYEE = """
+CREATE TABLE Employee (id INT, name VARCHAR(255), deptId INT)
+"""
+_SCHEMA_DDL_DEPARTMENT = """
+CREATE TABLE Department (id INT, name VARCHAR(255))
 """
 
-_INSERT_EMPLOYEE = "INSERT INTO Employee VALUES (:id, :name, :deptId)"
-_INSERT_DEPARTMENT = "INSERT INTO Department VALUES (:id, :name)"
+_INSERT_EMPLOYEE = "INSERT INTO Employee (id, name, deptId) VALUES (%s, %s, %s)"
+_INSERT_DEPARTMENT = "INSERT INTO Department (id, name) VALUES (%s, %s)"
 
-def _create_db(data):
-    # data = {"Employee": [...], "Department": [...]}
-    conn = sqlite3.connect(":memory:")
-    cursor = conn.cursor()
-    for stmt in [s for s in _SCHEMA_DDL.split(";") if s.strip()]:
-        cursor.execute(stmt)
-    for row in data.get("Employee", []):
-        cursor.execute(_INSERT_EMPLOYEE, row)
-    for row in data.get("Department", []):
-        cursor.execute(_INSERT_DEPARTMENT, row)
-    conn.commit()
-    return conn
+# Inside execute_solution(), after CREATE DATABASE + USE:
+#   cur.execute(_SCHEMA_DDL_EMPLOYEE)
+#   cur.execute(_SCHEMA_DDL_DEPARTMENT)
+#   for row in data.get("Employee", []):
+#       cur.execute(_INSERT_EMPLOYEE, (row["id"], row["name"], row["deptId"]))
+#   for row in data.get("Department", []):
+#       cur.execute(_INSERT_DEPARTMENT, (row["id"], row["name"]))
 ```
 
 ```python
@@ -196,7 +197,8 @@ Always sort in `_format_output` — do NOT rely on SQL ORDER BY for grading.
 The platform strips trailing whitespace and compares line by line.
 
 ### NULL handling
-Python `None` → SQLite `NULL` → print as `"NULL"` (not `"None"`, not `"null"`).
+Python `None` -> MySQL `NULL` -> print as `"NULL"` (not `"None"`, not `"null"`).
+pymysql returns Python `None` for SQL NULL -- identical to sqlite3 behaviour.
 
 ```python
 def _format_output(rows):
@@ -208,8 +210,18 @@ def _format_output(rows):
 ```
 
 ### Integer vs string comparison in results
-SQLite returns Python types: `INTEGER` columns come back as `int`, `TEXT` as `str`.
-The `str(v)` in format_output handles this uniformly.
+pymysql returns Python types matching MySQL column types: INT columns as `int`,
+VARCHAR as `str`. The `str(v)` in `_format_output` handles this uniformly.
+
+### Non-ASCII bytes in wrapper.py / solution.py
+Judge0 rejects source code containing non-ASCII bytes when `base64_encoded=false`
+(the mode used by `orchestrator_sql.py`). The symptom is an HTTP 201 response with
+`{"error":"some attributes ... cannot be converted to UTF-8"}` and the submission
+gets queued asynchronously -- where the isolate sandbox has no Docker DNS and
+`mysql-eval-server` cannot be reached.
+
+Rule: **all comments and string literals in wrapper.py and solution.py must be
+ASCII-only.** Use `--` instead of em dashes, `!!` or `WARNING:` instead of emoji.
 
 ### Stale PID in Judge0 server
 If the Judge0 server container is in a restart loop:
@@ -246,7 +258,8 @@ import requests, json
 with open("solution.py") as f: src = f.read()
 with open("examples.json") as f: ex = json.load(f)[0]
 r = requests.post("http://localhost:3000/submissions?base64_encoded=false&wait=true&fields=stdout,status",
-    json={"source_code": src, "language_id": 71, "stdin": ex["stdin"]}).json()
+    json={"source_code": src, "language_id": 71, "stdin": ex["stdin"],
+          "enable_network": True}).json()
 out = (r.get("stdout") or "").strip()
 exp = ex["expected_output"].strip()
 print("✅ PASS" if out == exp else f"❌ FAIL\ngot:      '{out}'\nexpected: '{exp}'")

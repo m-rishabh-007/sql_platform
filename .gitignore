@@ -1,4 +1,4 @@
-# Generated test suites (large JSON files)
+# Generated test suites (large JSON files -- reproducible via orchestrator_sql.py)
 **/*_sql_testcases.json
 
 # Python
@@ -27,3 +27,9 @@ env/
 # Local config overrides
 .env
 local_config.py
+
+# Judge0 stack runtime files (belt-and-suspenders; judge0/.gitignore also covers these)
+judge0/log/
+judge0/Booting
+judge0/Rails
+judge0/Run

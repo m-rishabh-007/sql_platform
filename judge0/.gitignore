@@ -1,0 +1,41 @@
+# Judge0 runtime log -- can be very large (production.log reaches hundreds of MB)
+log/
+
+# Judge0 runtime marker files -- created/deleted by the server process at startup
+# These are empty files used as status indicators, not configuration.
+Booting
+Rails
+Run
+
+# Docker data volumes (managed by Docker, not git)
+data/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Docker Compose local overrides
+docker-compose.override.yml
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS files
+Thumbs.db
+
+# NOTE: vendor/ (pymysql source) IS tracked -- required to rebuild the
+# judge0/judge0:1.13.1-mysql squashed image. Do not add vendor/ here.

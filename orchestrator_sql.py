@@ -84,6 +84,7 @@ def submit_to_judge0(source_code: str, stdin_data: str) -> dict:
             "source_code": source_code,
             "language_id": PYTHON_LANGUAGE_ID,
             "stdin": stdin_data,
+            "enable_network": True,  # SQL wrappers need to reach mysql-eval-server
         },
         timeout=30,
     )
