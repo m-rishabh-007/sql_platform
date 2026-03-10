@@ -1,0 +1,138 @@
+x-logging:
+  &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 100M
+
+services:
+  server:
+    # Same squashed image as the worker — ensures isolate sandbox sees pymysql for
+    # wait=true submissions, which run inline in this container's puma process.
+    image: judge0/judge0:1.13.1-mysql
+    working_dir: /api
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+      - ./log:/api/log:rw
+      - ./config/puma.rb:/api/config/puma.rb:ro
+    ports:
+      - "3000:3000"
+    environment:
+      - RAILS_ENV=production
+      - DATABASE_URL=postgresql://judge0:4707@db:5432/judge0
+      - REDIS_URL=redis://:4707@redis:6379
+      - PORT=3000
+      - WEB_CONCURRENCY=2
+      - RAILS_MAX_THREADS=5
+      - PUMA_MIN_THREADS=0
+      - PUMA_MAX_THREADS=5
+      - SECRET_KEY_BASE=6d33524ec89b6e2445bde1cd798367844f084d81e6effeded74088938b321a637391f9f2bb1a90bfae0025e1ec1caf42016d7d0eecb5aa2eaf6c50d16a2516cc
+      # Restore Ruby+Python paths lost during docker export/import squash
+      - PATH=/usr/local/python-3.8.1/bin:/usr/local/ruby-2.7.0/bin:/opt/.gem/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # Needed by IsolateJob: queue_as ENV["JUDGE0_VERSION"].to_sym
+      - JUDGE0_VERSION=1.13.1
+    command: ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
+    entrypoint: ["/bin/sh", "-c", "cd /api && cp ./docker-entrypoint.sh /tmp/docker-entrypoint.sh && chmod +x /tmp/docker-entrypoint.sh && sed -i 's/sudo//g' /tmp/docker-entrypoint.sh && echo 'root ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/root && bundle install && /tmp/docker-entrypoint.sh bundle exec rails server -b 0.0.0.0 -p 3000"]
+    user: root
+    privileged: true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    <<: *default-logging
+    restart: always
+
+  worker:
+    # Squashed single-layer image: all judge0/judge0:1.13.1 layers + pymysql collapsed
+    # into one flat layer so isolate's overlayfs sandbox sees pymysql.
+    # Rebuilt via: docker export judge0-worker-1 | docker import \
+    #   --change 'ENV PATH=...' - judge0/judge0:1.13.1-mysql
+    image: judge0/judge0:1.13.1-mysql
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    ports: []
+    environment:
+      - RAILS_ENV=production
+      - DATABASE_URL=postgresql://judge0:4707@db:5432/judge0
+      - REDIS_URL=redis://:4707@redis:6379
+      - SECRET_KEY_BASE=6d33524ec89b6e2445bde1cd798367844f084d81e6effeded74088938b321a637391f9f2bb1a90bfae0025e1ec1caf42016d7d0eecb5aa2eaf6c50d16a2516cc
+      # Needed by IsolateJob: queue_as ENV["JUDGE0_VERSION"].to_sym
+      - JUDGE0_VERSION=1.13.1
+      # Restore full PATH: squashed image lost WORKDIR and Ruby paths from original image metadata
+      - PATH=/usr/local/python-3.8.1/bin:/usr/local/ruby-2.7.0/bin:/opt/.gem/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # SQL execution: worker containers need these to reach the eval MySQL instance
+      - MYSQL_EVAL_HOST=mysql-eval-server
+      - MYSQL_RUNNER_PASSWORD=J0runner!secure99
+    command: ["/bin/sh", "-c", "cd /api && bundle install && /tmp/docker-entrypoint.sh bundle exec rake resque:work QUEUE=*"]
+    entrypoint: ["/bin/sh", "-c", "cd /api && rm -f /var/run/crond.pid && cp ./docker-entrypoint.sh /tmp/docker-entrypoint.sh && chmod +x /tmp/docker-entrypoint.sh && sed -i 's/sudo//g' /tmp/docker-entrypoint.sh && echo 'root ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/root && bundle install && /tmp/docker-entrypoint.sh bundle exec rake resque:work QUEUE=*"]
+    user: root
+    privileged: true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      mysql-eval-server:
+        condition: service_healthy
+    <<: *default-logging
+    restart: always
+
+  db:
+    image: postgres:16.2
+    environment:
+      - POSTGRES_USER=judge0
+      - POSTGRES_PASSWORD=4707
+      - POSTGRES_DB=judge0
+    volumes:
+      - data:/var/lib/postgresql/data/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U judge0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    <<: *default-logging
+    restart: always
+
+  redis:
+    image: redis:7.2.4
+    command:
+      - bash
+      - -c
+      - 'docker-entrypoint.sh --appendonly no --requirepass "4707"'
+    environment:
+      - REDIS_PASSWORD=4707
+    <<: *default-logging
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # SQL Evaluation MySQL instance
+  # ---------------------------------------------------------------------------
+  # Accessible only on the internal Docker network (port 3306 NOT exposed to host).
+  # The judge0_runner account (created by mysql/init.sql) has GRANT ALL only on
+  # databases matching the sandbox_% prefix — zero access to anything else.
+  # ⚠️  Change MYSQL_ROOT_PASSWORD and the password in mysql/init.sql before
+  #     deploying to any shared or production environment.
+  mysql-eval-server:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_secure_pass
+      - MYSQL_ROOT_HOST=%
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # No ports: block — 3306 is intentionally NOT published to the host
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    <<: *default-logging
+    restart: always
+
+volumes:
+  data:
+  log:
+  mysql_data:

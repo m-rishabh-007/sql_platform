@@ -1,0 +1,24 @@
+# Dockerfile.worker — Custom Judge0 worker image with pymysql
+#
+# Why this exists:
+#   The default judge0/judge0 image ships with only the Python standard library.
+#   SQL problems use a Python wrapper that connects to mysql-eval-server via pymysql.
+#   This image extends the base worker to pre-install pymysql at the system level
+#   so it is available inside the isolate sandbox when language_id=71 is executed.
+#
+# Rebuild & redeploy after any change:
+#   docker compose build worker
+#   docker compose up -d worker
+
+FROM judge0/judge0:1.13.1
+
+USER root
+
+# Judge0 bundles Python 3.8.1 at /usr/local/python-3.8.1 — separate from the
+# Debian system Python 3.7. Language ID 71 executes via this bundled binary.
+# We must install pymysql into THAT interpreter, not the system pip3 (which
+# targets 3.7 and would be invisible to submissions).
+#
+# ensurepip bootstraps pip inside the bundled interpreter; then we install pymysql.
+RUN /usr/local/python-3.8.1/bin/python3.8 -m ensurepip --upgrade \
+    && /usr/local/python-3.8.1/bin/python3.8 -m pip install --no-cache-dir pymysql

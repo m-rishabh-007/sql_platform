@@ -3,10 +3,11 @@
 SQL problem execution engine for a LeetCode-style competitive programming platform.
 
 Users write MySQL-style SQL queries in the browser. The platform wraps their SQL in
-Python, spins up an in-memory SQLite database seeded from JSON test data, executes
-the query, and grades the output — all via a self-hosted Judge0 instance (Python ID 71).
+Python, submits it to Judge0 (Python language_id 71), which connects to a dedicated
+`mysql-eval-server` container, runs the query against an ephemeral `sandbox_<uuid>`
+database seeded from JSON test data, and grades the sorted output.
 
-No extra database server. No special Judge0 language support. Just Python + SQLite.
+Full MySQL 8.0 dialect support -- no SQLite shims, no missing functions.
 
 ---
 
@@ -14,22 +15,29 @@ No extra database server. No special Judge0 language support. Just Python + SQLi
 
 ```
 sql_platform/
-├── orchestrator_sql.py          ← generates test suites for any problem
+├── orchestrator_sql.py          <- generates test suites for any problem
+├── PLATFORM_CONTEXT.md          <- full pattern reference (read before coding)
+├── MIGRATION_SQLITE_TO_MYSQL.md <- migration history and architecture notes
 ├── sql_engine/
-│   ├── sql_executor.py          ← local dev / smoke-test helper
+│   ├── sql_executor.py          <- local dev / smoke-test helper (not used in Judge0)
 │   └── __init__.py
-├── manager_direct_reports/      ← first problem (9 files)
+├── judge0/                      <- self-hosted Judge0 stack (5 containers)
+│   ├── docker-compose.yml
+│   ├── judge0.conf
+│   ├── mysql/init.sql            <- bootstraps judge0_runner MySQL account
+│   └── ...
+├── manager_direct_reports/      <- first problem (9 files)
 │   ├── description.txt
 │   ├── schema.sql
-│   ├── solution.sql             ← reference SQL
-│   ├── template.sql             ← contestant starter
-│   ├── wrapper.py               ← platform injection template
-│   ├── solution.py              ← self-contained (for orchestrator)
-│   ├── generator.py             ← generates random JSON test data
-│   ├── examples.json            ← visible examples (JSON stdin)
-│   └── config.json              ← test generation buckets
+│   ├── solution.sql             <- reference SQL
+│   ├── template.sql             <- contestant starter
+│   ├── wrapper.py               <- platform injection template
+│   ├── solution.py              <- self-contained (for orchestrator)
+│   ├── generator.py             <- generates random JSON test data
+│   ├── examples.json            <- visible examples (JSON stdin)
+│   └── config.json              <- test generation buckets
 └── .github/
-    └── copilot-instructions.md  ← AI agent guide
+    └── copilot-instructions.md  <- AI agent guide
 ```
 
 ---
@@ -38,20 +46,21 @@ sql_platform/
 
 ```
 Contestant writes SQL in editor (template.sql is the starter)
-         │
-         ▼
+         |
+         v
 Platform injects SQL into wrapper.py:
-   USER_SQL = ""   →   USER_SQL = """SELECT name FROM Employee..."""
-         │
-         ▼
-Combined Python file submitted to Judge0 (language_id: 71)
+   USER_SQL = ""   ->   USER_SQL = """SELECT name FROM Employee..."""
+         |
+         v
+Combined Python file submitted to Judge0 (language_id: 71, enable_network: true)
 stdin = JSON array of table rows (from generator.py)
-         │
-         ▼
-SQLite in-memory DB created → query executed → stdout printed
-(rows sorted deterministically for grading)
-         │
-         ▼
+         |
+         v
+wrapper.py connects to mysql-eval-server (internal Docker network)
+  CREATE DATABASE sandbox_<uuid> -> seed rows -> run USER_SQL
+  -> sorted stdout -> DROP DATABASE sandbox_<uuid>
+         |
+         v
 Grader compares stdout to expected_output from testcases.json
 ```
 
@@ -59,14 +68,22 @@ Grader compares stdout to expected_output from testcases.json
 
 ## Judge0 setup
 
-The platform expects Judge0 at `http://localhost:3000`.
+The platform stack lives in `judge0/` and runs **5 containers**:
+`server`, `worker`, `db` (PostgreSQL), `redis`, `mysql-eval-server`.
 
 ```bash
-# In your judge0-submission-system/ directory:
+cd judge0/
 docker compose up -d
 
 # Health check:
 curl -s http://localhost:3000/system_info | head -c 80
+
+# Verify Python + MySQL works end-to-end:
+curl -s -X POST "http://localhost:3000/submissions?base64_encoded=false&wait=true&fields=stdout,status" \
+  -H "Content-Type: application/json" \
+  -d '{"source_code":"import pymysql\nconn=pymysql.connect(host=\"mysql-eval-server\",user=\"judge0_runner\",password=\"J0runner!secure99\",autocommit=True)\nprint(\"ok\")\nconn.close()","language_id":71,"stdin":"","enable_network":true}' \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status']['description'])"
+# Expected: Accepted
 ```
 
 ---
@@ -107,7 +124,7 @@ python3 orchestrator_sql.py -p manager_direct_reports/
 ```bash
 cd manager_direct_reports/
 
-# Test with the example input
+# Test solution.py directly (uses MySQL via subprocess -- requires Judge0 stack up)
 echo '[{"id":101,"name":"John","department":"A","managerId":null},
        {"id":102,"name":"Dan","department":"A","managerId":101},
        {"id":103,"name":"James","department":"A","managerId":101},
@@ -149,19 +166,19 @@ python3 generator.py small --rng-seed 42
 
 ## SQL dialect
 
-Problems use **SQLite SQL** which is compatible with ~95% of MySQL syntax used in
-LeetCode-style problems:
+Problems run against **MySQL 8.0** -- full dialect support:
 
 | Feature | Supported |
-|---------|-----------|
-| SELECT, WHERE, GROUP BY, HAVING | ✅ |
-| JOIN (INNER, LEFT, RIGHT\*) | ✅ (\*RIGHT via LEFT) |
-| Subqueries, IN, EXISTS | ✅ |
-| CTEs (WITH ... AS) | ✅ |
-| Window functions (ROW_NUMBER, RANK, etc.) | ✅ SQLite 3.25+ |
-| LIMIT / OFFSET | ✅ |
-| IFNULL / COALESCE / CASE | ✅ |
-| ILIKE | ❌ use `LOWER(col) LIKE ...` |
+|---------|----------|
+| SELECT, WHERE, GROUP BY, HAVING | Yes |
+| JOIN (INNER, LEFT, RIGHT) | Yes |
+| Subqueries, IN, EXISTS | Yes |
+| CTEs (WITH ... AS) | Yes |
+| Window functions (ROW_NUMBER, RANK, etc.) | Yes |
+| LIMIT / OFFSET | Yes |
+| IFNULL / COALESCE / CASE | Yes |
+| DATEDIFF, STR_TO_DATE, DATE_FORMAT | Yes (MySQL native) |
+| ILIKE | No -- use `LOWER(col) LIKE ...` |
 
 ---
 
